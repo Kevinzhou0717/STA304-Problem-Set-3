@@ -1,0 +1,384 @@
+---
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+```{r}
+#### Preamble ####
+# Purpose: Prepare and clean the survey data downloaded from [https://www.voterstudygroup.org/publication/nationscape-data-set] and https://usa.ipums.org/usa/index.shtml
+# Author: Yuhan Gu 
+# Data: 31 October 2020
+# Contact: sue.gu@mail.utoronto.ca
+# License: MIT
+# Pre-requisites: 
+# - Need to have downloaded the data from X and save the folder that you're 
+# interested in to inputs/data 
+# - Don't forget to gitignore it!
+library(haven)
+library(tidyverse)
+```
+### survey data cleaning
+```{r}
+# Read in the raw data 
+raw_survey <- read_dta("ns20200625.dta")
+# Add the labels
+raw_survey <- labelled::to_factor(raw_survey)
+# select certain varibles
+reduced_survey <- 
+  raw_survey %>% 
+  select(interest,
+         registration,
+         vote_2016,
+         vote_intention,
+         vote_2020,
+         age,
+         gender,
+         race_ethnicity,
+         hispanic,
+         foreign_born,
+         employment,
+         education,
+         census_region,
+         household_income,
+         state)
+#check the values
+summary(reduced_survey)
+```
+
+```{r}
+#registration: since the survey is in June, not pass the registration deadline, assume the people not registered may register later ?
+#vote_intention: only consider people who eligible to vote
+#people age, minimum age in data is 18, do not need filter
+reduced_survey <- reduced_survey %>% 
+  filter(vote_intention!="No, I am not eligible to vote")
+#change age from numerical to categorical, from age 18
+#(for this one, I just applied classification used by Statistic Canada)
+reduced_survey <- reduced_survey %>% 
+  mutate(age = case_when(age <=29 ~ '18 to 29',
+                         age >29  & age <= 44 ~ '30 to 44',
+                         age >44  & age <= 64 ~ '45 to 64',
+                         age >64  ~ '65+'))
+summary(as.factor(reduced_survey$age))
+```
+
+```{r}
+#create variable 'race' by mutate race_ethnicity categories to match census data
+summary(reduced_survey$race_ethnicity)
+otherAsian_or_PacificIslander <-
+  c("Asian (Asian Indian)", "Asian (Vietnamese)","Asian (Other)",
+    "Asian (Korean)","Asian (Filipino)",
+    "Pacific Islander (Native Hawaiian)","Pacific Islander (Other)",
+    "Pacific Islander (Samoan)","Pacific Islander (Guamanian)")
+reduced_survey <- reduced_survey %>% 
+  mutate(race = case_when(
+    race_ethnicity =="White" ~ 'White',
+    race_ethnicity =="Black, or African American" ~ 'Black, or African American',
+    race_ethnicity=="American Indian or Alaska Native"~"American Indian or Alaska Native",
+    race_ethnicity =="Asian (Chinese)" ~ 'Chinese',
+    race_ethnicity =="Asian (Japanese)" ~ 'Japanese',
+    race_ethnicity %in% otherAsian_or_PacificIslander ~"Other Asian or Pacific Islander",
+    race_ethnicity =="Some other race" ~ 'Other race'))
+summary(as.factor(reduced_survey$race))
+
+#mutate Hispanic categories to match census data
+summary(reduced_survey$hispanic)
+OtherHispanic <-
+  c("Argentinian","Colombian","Ecuadorian","Salvadorean",
+    "Guatemalan","Nicaraguan","Panamanian","Peruvian",
+    "Spanish","Venezuelan","Other Hispanic")
+reduced_survey <- reduced_survey %>% 
+  mutate(hispanic = case_when(
+    hispanic =="Not Hispanic" ~ "Not Hispanic",
+    hispanic =="Mexican" ~ "Mexican",
+    hispanic =="Puerto Rican" ~ "Puerto Rican",
+    hispanic =="Cuban" ~ "Cuban",
+    hispanic %in% OtherHispanic ~"Other"))
+summary(as.factor(reduced_survey$hispanic))
+
+# mutate employment status categories to match census data
+# consider the covid-19 bring unexpected impact on employment, we consider a person wherther in labor force instead of employment status
+is_labor <- c("Full-time employed","Part-time employed",
+              "Self-employed","Unemployed or temporarily on layoff")
+not_labor <- c("Retired","Homemaker","Student","Permanently disabled","Other:")
+reduced_survey <- reduced_survey %>% 
+  mutate(labor = case_when(
+    employment %in% is_labor ~ "Yes",
+    employment %in% not_labor ~ "No"))
+summary(as.factor(reduced_survey$labor))
+```
+
+```{r}
+reduced_survey <- reduced_survey %>%
+  mutate(age = as.factor(age),
+         race = as.factor(race),
+         hispanic = as.factor(hispanic),
+         labor = as.factor(labor),
+         education = as.factor(education),
+         employment = as.factor(employment),
+         state = as.factor(state))
+summary(reduced_survey$education)
+# treat 'Other post high school vocational training' and 'High school graduate' as High School, "Completed some graduate, but no degree" as college degree
+#mutate education level categories to match census data
+levels(reduced_survey$education)[12] <- c("High school level")
+reduced_survey$education[reduced_survey$education[]=="Other post high school vocational training"] <- "High school level"
+reduced_survey$education[reduced_survey$education[]=="High school graduate"] <- "High school level"
+reduced_survey$education[reduced_survey$education[]=="Completed some graduate, but no degree"] <- "College Degree (such as B.A., B.S.)"
+reduced_survey$education <- droplevels(reduced_survey$education)
+summary(reduced_survey$education)
+```
+
+
+```{r}
+# creat new variable that can used as logistic model response
+reduced_survey <-
+  reduced_survey %>%
+  mutate(vote_trump = 
+           as.factor(ifelse(vote_2020=="Donald Trump", 1, 0)),
+         vote_biden = 
+           as.factor(ifelse(vote_2020=="Joe Biden",1,0)))
+reduced_survey <- na.omit(reduced_survey)
+summary(reduced_survey)
+```
+
+### census data cleaning
+```{r}
+# Read in the raw data.
+raw_census <- read_dta("usa_00001.dta")
+```
+
+```{r}
+reduced_census <- 
+  raw_census %>% 
+  select(educ,
+         educd,
+         empstat,
+         empstatd,
+         citizen,
+         hispan,
+         race,
+         age,
+         sex,
+         perwt,
+         hhincome,
+         stateicp)
+#check the values
+summary(reduced_census)
+```
+
+```{r}
+#only consider people who eligible to vote
+#people age >= 18 and 'naturalized citizen' are eligible to vote
+reduced_census <- reduced_census %>%
+  filter(age >= 18)
+
+#change age from numerical to categorical, from age 18
+#(for this one, I just applied classification used by Statistic Canada)
+reduced_census <- reduced_census %>% 
+  mutate(age = case_when(age <=29 ~ '18 to 29',
+                         age >29  & age <= 44 ~ '30 to 44',
+                         age >44  & age <= 64 ~ '45 to 64',
+                         age >64  ~ '65+'))
+summary(as.factor(reduced_census$age))
+# Add the labels
+reduced_census <- labelled::to_factor(reduced_census)
+#note: c"born abroad of american parents" eligible to apply american citizenship, but we are not sure they already have citizenship or not.
+reduced_census <- reduced_census %>%
+  filter(citizen =="naturalized citizen")
+```
+
+```{r}
+# rename and lable gender match the survey category
+reduced_census <- reduced_census %>%
+  mutate(gender = as.factor(ifelse(sex=="female","Female","Male")))
+summary(reduced_census$gender)
+
+#create variable 'race' by mutate race_ethnicity categories to match census data
+summary(reduced_census$race)
+other_race <- c("other race, nec","two major races","three or more major races")
+reduced_census <- reduced_census %>% 
+  mutate(race = case_when(
+    race =="white" ~ 'White',
+    race =="black/african american/negro" ~ 'Black, or African American',
+    race =="american indian or alaska native"~"American Indian or Alaska Native",
+    race =="chinese" ~ 'Chinese',
+    race =="japanese" ~ 'Japanese',
+    race =="other asian or pacific islander" ~"Other Asian or Pacific Islander",
+    race %in% other_race ~ 'Other race'))
+summary(as.factor(reduced_census$race))
+
+# consider the covid-19 bring unexpected impact on employment, we consider a person wherther in labor force instead of employment status
+is_labor <- c("employed","unemployed")
+summary(reduced_census$empstat)
+reduced_census <- reduced_census %>% 
+  mutate(labor = case_when(
+    empstat %in% is_labor ~ "Yes",
+    empstat== "not in labor force" ~ "No"))
+summary(as.factor(reduced_census$labor))
+
+# relabel state by their acronym
+reduced_census<- reduced_census %>% 
+  mutate(state = case_when(stateicp=="alabama"~"AL",
+                           stateicp=="alaska"~"AK",
+                           stateicp=="arizona"~"AZ",
+                           stateicp=="arkansas"~"AR",
+                           stateicp=="california"~"CA",
+                           stateicp=="colorado"~"CO",
+                           stateicp=="connecticut"~"CT",
+                           stateicp=="delaware"~"DE",
+                           stateicp=="florida"~"FL",
+                           stateicp=="georgia"~"GA",
+                           stateicp=="hawaii"~"HI",
+                           stateicp=="idaho"~"ID",
+                           stateicp=="illinois"~"IL",
+                           stateicp=="indiana"~"IN",
+                           stateicp=="iowa"~"IA",
+                           stateicp=="kansas"~"KS",
+                           stateicp=="kentucky"~"KY",
+                           stateicp=="louisiana"~"LA",
+                           stateicp=="maine"~"ME",
+                           stateicp=="maryland"~"MD",
+                           stateicp=="massachusetts"~"MA",
+                           stateicp=="michigan"~"MI",
+                           stateicp=="minnesota"~"MN",
+                           stateicp=="mississippi"~"MS",
+                           stateicp=="missouri"~"MO",
+                           stateicp=="montana"~"MT",
+                           stateicp=="nebraska"~"NE",
+                           stateicp=="nevada"~"NV",
+                           stateicp=="new hampshire"~"NH",
+                           stateicp=="new jersey"~"NJ",
+                           stateicp=="new mexico"~"NM",
+                           stateicp=="new york"~"NY",
+                           stateicp=="north carolina"~"NC",
+                           stateicp=="north dakota"~"ND",
+                           stateicp=="ohio"~"OH",
+                           stateicp=="oklahoma"~"OK",
+                           stateicp=="oregon"~"OR",
+                           stateicp=="pennsylvania"~"PA",
+                           stateicp=="rhode island"~"RI",
+                           stateicp=="south carolina"~"SC",
+                           stateicp=="south dakota"~"SD",
+                           stateicp=="tennessee"~"TN",
+                           stateicp=="texas"~"TX",
+                           stateicp=="utah"~"UT",
+                           stateicp=="vermont"~"VT",
+                           stateicp=="virginia"~"VA",
+                           stateicp=="washington"~"WA",
+                           stateicp=="west virginia"~"WV",
+                           stateicp=="wisconsin"~"WI",
+                           stateicp=="wyoming"~"WY",
+                           stateicp=="district of columbia"~"DC")) 
+summary(as.factor(reduced_census$state))
+```
+
+```{r}
+summary(reduced_census$educ)
+summary(reduced_census$educd)
+g3_or_less <- c("no schooling completed", "nursery school, preschool","kindergarten","grade 1","grade 2","grade 3")
+g4_8 <- c("grade 4","grade 5","grade 6","grade 7","grade 8")
+som_high <- c("grade 9","grade 10","grade 11","12th grade, no diploma")
+high <- c("regular high school diploma","ged or alternative credential")
+som_coll <- c("some college, but less than 1 year","1 or more years of college credit, no degree")
+Associate_Degree <- c("associate's degree, type not specified")
+college <- c("bachelor's degree","professional degree beyond a bachelor's degree")
+reduced_census <- reduced_census %>% 
+  mutate(education = case_when(
+    educd %in% g3_or_less ~ "3rd Grade or less",
+    educd %in% g4_8 ~ 'Middle School - Grades 4 - 8',
+    educd %in% som_high ~"Completed some high school",
+    educd %in% som_coll ~ "Completed some college, but no degree",
+    educd %in% Associate_Degree ~ "Associate Degree",
+    educd %in% college ~"College Degree (such as B.A., B.S.)",
+    educd =="master's degree" ~"Masters degree",
+    educd =="doctoral degree" ~"Doctorate degree",
+    educd %in% high ~ "High school level"))
+summary(as.factor(reduced_census$education))
+
+reduced_census <- reduced_census %>% 
+  mutate(hispanic = case_when(
+    hispan =="not hispanic" ~ "Not Hispanic",
+    hispan =="mexican" ~ "Mexican",
+    hispan =="puerto rican" ~ "Puerto Rican",
+    hispan =="cuban" ~ "Cuban",
+    hispan =="other" ~"Other"))
+summary(as.factor(reduced_census$hispanic))
+```
+
+
+```{r}
+# relable na
+reduced_census$hhincome <- ifelse(reduced_census$hhincome==9999999, NaN, reduced_census$hhincome)
+# mutate household income to match survey level
+reduced_census <- reduced_census %>% 
+  mutate(household_income = case_when(hhincome<=14999 ~ "Less than $14,999",
+                                      hhincome>=15000 & hhincome<=19999~"$15,000 to $19,999",
+                                      hhincome>=20000 & hhincome<=24999~"$20,000 to $24,999",
+                                      hhincome>=25000 & hhincome<=29999~"$25,000 to $29,999",
+                                      hhincome>=30000 & hhincome<=34999~"$30,000 to $34,999",
+                                      hhincome>=35000 & hhincome<=39999~"$35,000 to $39,999",
+                                      hhincome>=40000 & hhincome<=44999~"$40,000 to $44,999",
+                                      hhincome>=45000 & hhincome<=49999~"$45,000 to $49,999",
+                                      hhincome>=50000 & hhincome<=54999~"$50,000 to $54,999",
+                                      hhincome>=55000 & hhincome<=59999~"$55,000 to $59,999",
+                                      hhincome>=60000 & hhincome<=64999~"$60,000 to $64,999",
+                                      hhincome>=65000 & hhincome<=69999~"$65,000 to $69,999",
+                                      hhincome>=70000 & hhincome<=74999~"$70,000 to $74,999",
+                                      hhincome>=75000 & hhincome<=79999~"$75,000 to $79,999",
+                                      hhincome>=80000 & hhincome<=84999~"$80,000 to $84,999",
+                                      hhincome>=85000 & hhincome<=89999~"$85,000 to $89,999",
+                                      hhincome>=90000 & hhincome<=94999~"$90,000 to $94,999",
+                                      hhincome>=95000 & hhincome<=99999~"$95,000 to $99,999",
+                                      hhincome>=100000 & hhincome<=124999~"$100,000 to $124,999",
+                                      hhincome>=125000 & hhincome<=149999~"$125,000 to $149,999",
+                                      hhincome>=150000 & hhincome<=174999~"$150,000 to $174,999",
+                                      hhincome>=175000 & hhincome<=199999~"$175,000 to $199,999",
+                                      hhincome>=200000 & hhincome<=249999~"$200,000 to $249,999",
+                                      hhincome>=250000~"$250,000 and above")) 
+summary(as.factor(reduced_census$household_income))
+```
+
+```{r}
+glimpse(reduced_census)
+reduced_census <- reduced_census %>%
+  mutate(age = as.factor(age),
+         race = as.factor(race),
+         labor = as.factor(labor),
+         state = as.factor(state),
+         education = as.factor(education),
+         hispanic = as.factor(hispanic),
+         household_income  = as.factor(household_income)) %>%
+  select(citizen,
+         hispanic,
+         race,
+         age,
+         gender,
+         perwt,
+         household_income,
+         education,
+         labor,
+         state)
+glimpse(reduced_census)
+```
+
+```{r}
+# check if map
+sort(unique(reduced_survey$age)) == sort(unique(reduced_census$age))
+sort(unique(reduced_survey$gender)) == sort(unique(reduced_census$gender))
+sort(unique(reduced_survey$race)) == sort(unique(reduced_census$race))
+sort(unique(reduced_survey$labor)) == sort(unique(reduced_census$labor))
+sort(as.character(unique(reduced_survey$education))) == sort(as.character(unique(reduced_census$education)))
+sort(as.character(unique(reduced_survey$household_income))) == sort(as.character(unique(reduced_census$household_income)))
+sort(unique(reduced_survey$hispanic)) == sort(unique(reduced_census$hispanic))
+sort(unique(reduced_survey$state)) == sort(unique(reduced_census$state))
+# create cell in data by gender and race
+reduced_survey$cell <- paste(reduced_survey$gender, reduced_survey$race)
+reduced_census$cell <- paste(reduced_census$gender, reduced_census$race)
+sort(unique(reduced_survey$cell)) == sort(unique(reduced_census$cell))
+```
+
+```{r}
+# Saving the data as a csv file in my working directory
+write_csv(reduced_census, "census_data.csv")
+write_csv(reduced_survey, "survey_data.csv")
+```
